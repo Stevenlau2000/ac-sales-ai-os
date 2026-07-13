@@ -106,6 +106,8 @@
     if (/孩子|老人|家人|老婆|老公|父母|家庭|卧室|客厅|同住/.test(t)) add("family", 2);
     if (/下单|交定金|先交定金|签(合同|单)|锁定权益|定下来|今天定|就定|现在定|成交/.test(t)) add("close", 4);
     if (/理解|咱们|感同身受|您放心|您看|您觉得|您说|您这么|您真是|为您|替您/.test(t)) add("empathy", 2);
+    if (/了解过|之前看过|研究过|做过功课|比过|逛过/.test(t)) add("research", 3);
+    if (/方案|方案书|报价单|配置单|给个方案|出方案|清单|怎么配|报个价|给个报价|配一|怎么选|选哪个|挑哪个|怎么挑|帮我选|推荐一下/.test(t)) add("proposal", 4);
     intents.sort((a, b) => b.s - a.s);
     let top = intents[0] ? intents[0].n : "generic";
     // 共情优先修正：陈述中含共情/rapport 标记、且并非在问家庭结构时，归到 empathy
@@ -124,6 +126,8 @@
     family: ["家里人你得顾上，", "老人孩子我挂心，", "一家子意见你得听，"],
     empathy: ["你这么讲我就舒坦了，", "你能体谅挺好，", "你懂我意思就好，"],
     close: ["你这步我有点动心，", "行，你说到这儿了，", "定金这茬我听着，"],
+    proposal: ["方案这事我比较看重，", "出方案没问题，", "行，你报方案吧，"],
+    research: ["那你门儿清，", "你做过功课是吧，", "行内行，"],
     generic: ["嗯，", "我听着呢，", "哦，"],
   };
   const INTENT_BODY = {
@@ -136,6 +140,8 @@
     family: ["老人怕直吹孩子房要新风，你咋排？", "老婆盯颜值我盯售后，你得都顾上。", "一家子意见杂，你帮我捋捋。"],
     empathy: ["我最怕买贵了还糟心，你给我兜个底。", "我就怕后期没人管，你实话实说。", "你能负责到底我就放心了。"],
     close: ["不过得跟家人通个气再定。", "你这名额今天真有效？别忽悠我。", "定金能先交，但权益得写清。"],
+    proposal: ["那你说说，我家这户型怎么配合适？别套模板。", "方案发我吧，不过价格明细得写清楚，别含糊。", "你拆开讲，每项多少钱、为什么选这个配置。", "那你把方案报一下，我先看配得对不对。"],
+    research: ["那你直接说干货，你觉得别家跟你家比到底哪强？", "那就好说了，直接讲关键差异和坑在哪。", "行家是吧，你直接报参数和质保，我听完跟别家比。"],
     generic: ["你接着说。", "你多讲讲。", "你继续说。"],
   };
   // ---- 提问分流：销售在提问时，客户直接作答（而非抛异议） ----
@@ -160,8 +166,8 @@
     const emo = c.emotion || {};
     const hit = (re) => (t.match(re) || []).length;
     const score = {
-      house:  hit(/房型|户型|面积|多大|几平|平米|㎡|建面|居室|几室|房子|房结构|朝向|层高|套内|大不大|多大面积|多大房/),
-      family: hit(/几口|老人|孩子|小孩|家人|父母|同住|配偶|一家|老婆|老公|太太|儿女|家里人/),
+      house:  hit(/房型|户型|面积|多大|几平|平米|㎡|建面|居室|几室|房子|房结构|朝向|层高|套内|大不大|多大面积|多大房|你家|你屋|住宅|房子|住|家的情况|家里的|家里情况/),
+      family: hit(/几口|老人|孩子|小孩|家人|父母|同住|配偶|一家|老婆|老公|太太|儿女|家里人|你家|你屋|家里|家的情况|家里的|家里情况/),
       budget: hit(/预算|价钱|多少钱|打算花|准备多少|兜里|价位|心理价|掏多少|大几万|能接受|封顶|多少钱搞得定/),
       reno:   hit(/装修|工期|水电|木工|进度|什么时候装|节点|交房|拎包|安装|进场|安装时间/),
       brand:  hit(/牌子|品牌|看中|比较|哪家|选哪|中意|对比|竞品|什么牌|你这牌|哪个牌子|格力|美的|大金|海尔|日立|三菱|约克|松下|卡萨帝/),
@@ -198,14 +204,19 @@
 
   // 自然倾听语：遇到听不懂的具体问法时，客户给出"我在听"而非答非所问/假装懂
   const LISTEN = ["嗯，你接着说。", "我听着呢，你多讲讲。", "哦，这样啊，你继续。", "嗯，有道理，你再说。"];
-  // 客户开场白：销售首句后，客户自然开口（按 DISC 风格），不答非所问
+  // 客户开场白：销售首句后，客户自然开口（按 DISC 风格，每型 3 种变体避免演示重复）
   const OPENERS = {
-    D: "直说吧，我想装套靠谱的中央空调，你给个实在方案。",
-    I: "哎，我家刚装修，正想装空调，你给我讲讲呗。",
-    S: "你好，我先随便看看，你给我介绍下。",
-    C: "你好，我想装空调，参数和依据你都得讲清楚。",
+    D: ["直说吧，我想装套靠谱的中央空调，你给个实在方案。", "别绕，我就看制冷快、别出错，你报个数。", "中央空调我看重结果，方案直接甩干货。"],
+    I: ["哎，我家刚装修，正想装空调，你给我讲讲呗。", "我邻居刚装完天天念叨，我也心痒痒，你说说？", "这块我不大懂，你跟我唠唠哪种好。"],
+    S: ["你好，我先随便看看，你给我介绍下。", "你好，我家刚${reno}，正琢磨空调这事，你给讲讲？", "不着急，我先了解下，你慢慢说。"],
+    C: ["你好，我想装空调，参数和依据你都得讲清楚。", "买之前我得把数据掰明白，你别光说好听。", "中央空调水挺深，你先把原理和质保讲透。"],
   };
-  function openerFor(c) { const d = (c && c.psychology && c.psychology.DISC) || "S"; return OPENERS[d] || OPENERS.S; }
+  function openerFor(c) {
+    const d = (c && c.psychology && c.psychology.DISC) || "S";
+    const reno = (c.house && c.house.decoration_stage) || "装修";
+    const pool = OPENERS[d] || OPENERS.S;
+    return pick(pool).replace("${reno}", reno);
+  }
 
   // DISC 人格声线：同一客户全程风格一致（干脆 / 感性 / 稳妥 / 理性）
   const DISC_VOICE = {
@@ -222,7 +233,15 @@
     let out = reply;
     // 衔接/开场：仅对"陈述性回复"加 DISC 声线与连续感；直接作答(isQ)绝不前缀/后缀，避免"你看啊，我家建面…"这种不自然拼接
     if (!isQ && turns > 1 && Math.random() < 0.5) out = (Math.random() < 0.5 ? pick(dv.open) : pick(BRIDGE)) + out;
-    if (!isQ && Math.random() < (disc === "C" ? 0.4 : disc === "D" ? 0.22 : 0.3)) out = out + pick(dv.fill);
+    if (!isQ && Math.random() < (disc === "C" ? 0.4 : disc === "D" ? 0.22 : 0.3)) {
+      // DISC fill dedup: 避免同一 fill 在最近 3 轮内重复（解决"有依据吗"机械复读）
+      const recent = s._lastFills || [];
+      let avail = dv.fill.filter(f => recent.slice(-5).indexOf(f) === -1);
+      if (!avail.length) avail = dv.fill;
+      const fill = pick(avail);
+      out = out + fill;
+      (s._lastFills = s._lastFills || []).push(fill);
+    }
     return out;
   }
 
@@ -235,45 +254,58 @@
     let reply = null, isQ = false;
     const emo = s.emotion || {};
     // 难度真实化：魔鬼/地狱抬高客户基础抗拒（不再用括号注脚）
-    const resist = Math.min(100, (emo.Resistance || 40) + (s.difficulty === "魔鬼" ? 25 : s.difficulty === "地狱" ? 15 : 0));
+    const resist = Math.min(100, (emo.Resistance || 40) + (s.difficulty === "魔鬼" ? 20 : s.difficulty === "地狱" ? 12 : 0));
     const trust = emo.Trust || 40;
     // 开场：销售首句 → 客户自然开口白；若首句就是能答的具体提问则直接作答，不强行开场
+    // 若首句有明确话题意图（方案/价格/品牌等）则跳过开场白，走正常话题应答
     if (s.turns === 1) {
       if (ci.isQuestion) {
         const a = answerQuestion(text, s);
         if (a) return discWrap(a, s, true);
       }
-      return discWrap(openerFor(s.customer), s, false);
+      if (ci.top === "generic") {
+        return discWrap(openerFor(s.customer), s, false);
+      }
+      // 首句有明确意图 → 不靠开场白，走下方正常应答路径
     }
     // 销售在提问 → 客户基于真实档案直接作答（话题打分，绝不答非所问）
+    // 但价格质疑类问句（"水分大不大/太贵了吧"）是异议而非事实提问，跳过作答走 INTENT_BODY
     if (ci.isQuestion) {
-      const a = answerQuestion(text, s);
-      if (a) { reply = a; isQ = true; }
-      else { reply = pick(LISTEN); } // 听不懂的具体问法→自然倾听，不编造、不假装懂
+      const isPriceChallenge = ci.top === "price" && /水分|太贵|虚高|不值|坑|贵了|超预算|水分大/.test(text);
+      if (!isPriceChallenge) {
+        const a = answerQuestion(text, s);
+        if (a) { reply = a; isQ = true; }
+      }
+      // 未命中话题的提问先不置回复，留待下方：命中 close 则收口，否则归为自然倾听
     }
     if (!reply) {
-      // 成交意图 + 高信任 + 压住抗拒 + 多轮 → 客户同意收口
-      // 收口阈值随难度抬高：普通 Trust>60/Resist<70，地狱 Trust>64/Resist<62，魔鬼 Trust>70/Resist<55
-      // （难客户既要赢得信任、又得压住抗拒才收口，符合真实销售逻辑）
+      // 成交意图 + 高信任 + 压住抗拒 + 多轮 → 客户同意收口（必须优先于倾听，否则问句式逼单永不收口）
       const closeNeed = s.difficulty === "魔鬼" ? 70 : s.difficulty === "地狱" ? 64 : 60;
       const closeResistCap = s.difficulty === "魔鬼" ? 55 : s.difficulty === "地狱" ? 62 : 70;
       if (ci.top === "close" && trust > closeNeed && resist < closeResistCap && (s.turns || 1) > 2) {
         return pick(CLOSE_YES);
       }
-      const bodyBank = INTENT_BODY[ci.top];
-      let bi;
-      if (resist > 60 && bodyBank.length > 1) bi = bodyBank.length - 1; // 高抗拒→偏尖锐
-      else {
-        bi = rnd(0, bodyBank.length - 1);
-        if (s._lastBody && s._lastBody.t === ci.top && bodyBank.length > 1) {
-          let guard = 0;
-          while (bi === s._lastBody.i && guard++ < 6) bi = rnd(0, bodyBank.length - 1);
+      // 提问→若话题有实质意图则走异议体（如"价格水分大不大？"→价格异议）
+      // 仅真正"听不懂"的 generic 提问才走自然倾听（不编造、不假装懂）
+      if (ci.isQuestion && ci.top === "generic") {
+        reply = pick(LISTEN);
+      } else {
+        const bodyBank = INTENT_BODY[ci.top];
+        let bi;
+        if (resist > 60 && bodyBank.length > 1) bi = bodyBank.length - 1; // 高抗拒→偏尖锐
+        else {
+          bi = rnd(0, bodyBank.length - 1);
+          if (s._lastBody && s._lastBody.t === ci.top && bodyBank.length > 1) {
+            let guard = 0;
+            while (bi === s._lastBody.i && guard++ < 6) bi = rnd(0, bodyBank.length - 1);
+          }
         }
+        s._lastBody = { t: ci.top, i: bi };
+        let ack = pick(INTENT_ACK[ci.top]);
+        if (trust > 65 && Math.random() < 0.4) ack = pick(WARM); // 高信任→偶尔柔和开场
+        reply = ack + bodyBank[bi];
+        isQ = false;  // 异议体回复按陈述处理
       }
-      s._lastBody = { t: ci.top, i: bi };
-      let ack = pick(INTENT_ACK[ci.top]);
-      if (trust > 65 && Math.random() < 0.4) ack = pick(WARM); // 高信任→偶尔柔和开场
-      reply = ack + bodyBank[bi];
     }
     return discWrap(reply, s, isQ);
   }
