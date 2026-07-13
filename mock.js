@@ -124,7 +124,7 @@
     family: ["家里人你得顾上，", "老人孩子我挂心，", "一家子意见你得听，"],
     empathy: ["你这么讲我就舒坦了，", "你能体谅挺好，", "你懂我意思就好，"],
     close: ["你这步我有点动心，", "行，你说到这儿了，", "定金这茬我听着，"],
-    generic: ["嗯，我听着呢，", "你接着说，", "这个我之前也想，"],
+    generic: ["嗯，", "我听着呢，", "哦，"],
   };
   const INTENT_BODY = {
     price: ["但隔壁同配便宜好几千，你这价水分多大？", "不过网上看着便宜一截，优惠能给到多少？", "算完还是超预算，能不能再让一点？"],
@@ -136,7 +136,7 @@
     family: ["老人怕直吹孩子房要新风，你咋排？", "老婆盯颜值我盯售后，你得都顾上。", "一家子意见杂，你帮我捋捋。"],
     empathy: ["我最怕买贵了还糟心，你给我兜个底。", "我就怕后期没人管，你实话实说。", "你能负责到底我就放心了。"],
     close: ["不过得跟家人通个气再定。", "你这名额今天真有效？别忽悠我。", "定金能先交，但权益得写清。"],
-    generic: ["你再给我展开讲讲？", "那具体怎么落地？", "听起来还行，我消化下。"],
+    generic: ["你接着说。", "你多讲讲。", "你继续说。"],
   };
   // ---- 提问分流：销售在提问时，客户直接作答（而非抛异议） ----
   const Q_ANSWER = {
@@ -149,6 +149,8 @@
     generic: ["这个嘛…我得想想再说。", "你问到点子上了，我一时还真说不准。", "嗯，让我捋捋——你接着说。"],
   };
   // 提问分流：销售在提问时，客户基于真实数字孪生档案直接作答（事实接地，对齐后端 coach.py）
+  // 关键修复：用"主题打分"替代脆弱的关键词分支——"房型/居室/套内"等自然说法也能命中 house；
+  // 命中多个主题（如"几口人住、房子多大"）则拼接作答；未命中任何主题才交回倾听语，绝不答非所问。
   function answerQuestion(text, s) {
     const t = text || "";
     const c = (s && s.customer) || {};
@@ -156,31 +158,54 @@
     const comp = (c.competitor || {}).visited || [];
     const compStr = comp.length ? comp.join("、") : "别家";
     const emo = c.emotion || {};
-    let ans = null;
-    if (/面积|多大|户型|几室|房子|平米|㎡|建面|多大平/.test(t)) {
-      ans = `我家建面大概${h.area}平，${h.type}，${h.orientation}。`;
-    } else if (/孩子|老人|家人|家庭|老婆|老公|父母|同住|几口/.test(t)) {
-      const parts = [];
-      if (f.has_child) parts.push("有个上学的娃");
-      if (f.has_elder) parts.push("老人同住");
-      if (!parts.length) parts.push("就两口子");
-      ans = `${f.members}——` + parts.join("，") + "，都怕吵怕直吹。";
-    } else if (/预算|多少钱准备|心里价|打算花|准备多少/.test(t)) {
-      ans = `我心里大概${b.expected}块，超太多真得再想想。`;
-    } else if (/装修|阶段|进度|水电|木工|啥时候装/.test(t)) {
-      ans = `刚${h.decoration_stage}，正卡安装节点。`;
-    } else if (/看过|比较|中意|牌子|哪个品牌|选哪/.test(t)) {
-      ans = `${compStr}我都逛过，还在比。`;
-    } else if (/担心|顾虑|怕|在意|最在乎/.test(t)) {
-      ans = (emo.Anxiety > 55 || emo.Resistance > 55)
+    const hit = (re) => (t.match(re) || []).length;
+    const score = {
+      house:  hit(/房型|户型|面积|多大|几平|平米|㎡|建面|居室|几室|房子|房结构|朝向|层高|套内|大不大|多大面积|多大房/),
+      family: hit(/几口|老人|孩子|小孩|家人|父母|同住|配偶|一家|老婆|老公|太太|儿女|家里人/),
+      budget: hit(/预算|价钱|多少钱|打算花|准备多少|兜里|价位|心理价|掏多少|大几万|能接受|封顶|多少钱搞得定/),
+      reno:   hit(/装修|工期|水电|木工|进度|什么时候装|节点|交房|拎包|安装|进场|安装时间/),
+      brand:  hit(/牌子|品牌|看中|比较|哪家|选哪|中意|对比|竞品|什么牌|你这牌|哪个牌子|格力|美的|大金|海尔|日立|三菱|约克|松下|卡萨帝/),
+      concern:hit(/担心|顾虑|怕|在意|最在乎|纠结|不放心/),
+      need:   hit(/需求|想要|希望|关注|看中|最想|图啥|诉求/),
+    };
+    const matched = Object.keys(score).filter((k) => score[k] > 0);
+    if (!matched.length) return null; // 非具体信息提问 → 交回倾听语
+    const asked = (s._asked = s._asked || {});
+    const cacheKey = matched.slice().sort().join("+");
+    if (asked[cacheKey]) return asked[cacheKey]; // 同话题组合重复提问→保持一致
+    const famParts = [];
+    if (f.has_child) famParts.push("有个上学的娃");
+    if (f.has_elder) famParts.push("老人同住");
+    if (!famParts.length) famParts.push("就两口子");
+    const ansMap = {
+      house:  `我家建面大概${h.area}平，${h.type}，${h.orientation}。`,
+      family: `${f.members}——` + famParts.join("，") + "，都怕吵怕直吹。",
+      budget: `我心里大概${b.expected}块，超太多真得再想想。`,
+      reno:   `刚${h.decoration_stage}，正卡安装节点。`,
+      brand:  `${compStr}我都逛过，还在比。`,
+      concern: (emo.Anxiety > 55 || emo.Resistance > 55)
         ? "我最怕买了不好用、售后没人管，还有静音。"
-        : "我主要担心价格虚高，还有保修靠不靠谱。";
-    }
-    return ans; // 未命中具体话题 → 返回 null，交由意图分支处理
+        : "我主要担心价格虚高，还有保修靠不靠谱。",
+      need:   "我就想要制冷快、省电、别太吵，最好老人小孩都舒服。",
+    };
+    const ans = matched.map((k) => ansMap[k]).join("");
+    asked[cacheKey] = ans;
+    return ans;
   }
 
   // 衔接语：多轮对话中偶发，制造"在听、在接话"的连续感
   const BRIDGE = ["嗯，行，", "你看啊，", "我刚才想了下，", "话说回来，", "哦对，", "这样吧，", "不过说真的，", "我跟你说，"];
+
+  // 自然倾听语：遇到听不懂的具体问法时，客户给出"我在听"而非答非所问/假装懂
+  const LISTEN = ["嗯，你接着说。", "我听着呢，你多讲讲。", "哦，这样啊，你继续。", "嗯，有道理，你再说。"];
+  // 客户开场白：销售首句后，客户自然开口（按 DISC 风格），不答非所问
+  const OPENERS = {
+    D: "直说吧，我想装套靠谱的中央空调，你给个实在方案。",
+    I: "哎，我家刚装修，正想装空调，你给我讲讲呗。",
+    S: "你好，我先随便看看，你给我介绍下。",
+    C: "你好，我想装空调，参数和依据你都得讲清楚。",
+  };
+  function openerFor(c) { const d = (c && c.psychology && c.psychology.DISC) || "S"; return OPENERS[d] || OPENERS.S; }
 
   // DISC 人格声线：同一客户全程风格一致（干脆 / 感性 / 稳妥 / 理性）
   const DISC_VOICE = {
@@ -195,9 +220,8 @@
     const dv = DISC_VOICE[disc] || DISC_VOICE.S;
     const turns = s.turns || 1;
     let out = reply;
-    // 衔接/开场：多轮后给连续感（DISC 开场白 或 通用衔接语）
-    if (turns > 1 && Math.random() < 0.5) out = (Math.random() < 0.5 ? pick(dv.open) : pick(BRIDGE)) + out;
-    // 收尾口头禅（DISC 风格一致；提问作答时不强加，避免违和）
+    // 衔接/开场：仅对"陈述性回复"加 DISC 声线与连续感；直接作答(isQ)绝不前缀/后缀，避免"你看啊，我家建面…"这种不自然拼接
+    if (!isQ && turns > 1 && Math.random() < 0.5) out = (Math.random() < 0.5 ? pick(dv.open) : pick(BRIDGE)) + out;
     if (!isQ && Math.random() < (disc === "C" ? 0.4 : disc === "D" ? 0.22 : 0.3)) out = out + pick(dv.fill);
     return out;
   }
@@ -213,10 +237,19 @@
     // 难度真实化：魔鬼/地狱抬高客户基础抗拒（不再用括号注脚）
     const resist = Math.min(100, (emo.Resistance || 40) + (s.difficulty === "魔鬼" ? 25 : s.difficulty === "地狱" ? 15 : 0));
     const trust = emo.Trust || 40;
-    // 销售在提问且问的是具体信息 → 客户直接作答
+    // 开场：销售首句 → 客户自然开口白；若首句就是能答的具体提问则直接作答，不强行开场
+    if (s.turns === 1) {
+      if (ci.isQuestion) {
+        const a = answerQuestion(text, s);
+        if (a) return discWrap(a, s, true);
+      }
+      return discWrap(openerFor(s.customer), s, false);
+    }
+    // 销售在提问 → 客户基于真实档案直接作答（话题打分，绝不答非所问）
     if (ci.isQuestion) {
       const a = answerQuestion(text, s);
       if (a) { reply = a; isQ = true; }
+      else { reply = pick(LISTEN); } // 听不懂的具体问法→自然倾听，不编造、不假装懂
     }
     if (!reply) {
       // 成交意图 + 高信任 + 压住抗拒 + 多轮 → 客户同意收口
