@@ -204,8 +204,11 @@
       return ok({ session_id: sid, customer, world: { season: "夏季", weather: "高温 38℃", policy: "以旧换新补贴 15%-20%" } });
     }
     if (m === "POST" && path === "/api/training/turn") {
-      const sid = body && body.session_id; const s = state.sessions[sid];
-      if (!s) return Promise.reject(new Error("会话不存在（演示模式需先「开始训练」）"));
+      const sid = body && body.session_id; let s = state.sessions[sid];
+      if (!s) { // 续训自愈：会话缺失时基于预览生成客户重建，避免演示中断
+        const cust = genCustomer({});
+        s = state.sessions[sid] = { customer: cust, messages: [], emotion: cust.emotion, training_goal: "需求洞察", difficulty: "普通", report: null };
+      }
       const text = (body && body.message) || "";
       s.messages.push(text);
       const a = analyze(text, s.customer, s.emotion);
@@ -224,7 +227,7 @@
       return ok({ customer: genCustomer(body || {}) });
     }
 
-    if (m === "GET" && path === "/api/knowledge/list") return ok(state.knowledge);
+    if (m === "GET" && path === "/api/knowledge/list") return ok(state.knowledge.map(k => ({ ...k, attachments: k.attachments || [] })));
     if (m === "GET" && path === "/api/knowledge/search") {
       const kw = (q.q || "").toLowerCase();
       const hits = state.knowledge.filter(k => !kw || (k.title + k.content + k.tags.join("")).toLowerCase().includes(kw))
@@ -237,9 +240,9 @@
       return ok({ answer: hit ? hit.content : "（演示）建议通过知识运营中心补充该条目，避免编造。", confidence: "0.82", evidence: [hit || state.knowledge[0]] });
     }
     if (m === "POST" && path === "/api/knowledge/add") {
-      const k = { category: (body && body.category) || "product", title: (body && body.title) || "未命名", content: (body && body.content) || "", tags: ((body && body.tags) || "").split(",").map(s => s.trim()).filter(Boolean), brand: "通用" };
+      const k = { category: (body && body.category) || "product", title: (body && body.title) || "未命名", content: (body && body.content) || "", tags: ((body && body.tags) || "").split(",").map(s => s.trim()).filter(Boolean), brand: "通用", attachments: (body && body.attachments) || [] };
       state.knowledge.unshift(k);
-      return ok({ ok: true });
+      return ok({ ok: true, id: state.knowledge.length });
     }
 
     return Promise.reject(new Error("Mock 未覆盖端点：" + method + " " + path));
