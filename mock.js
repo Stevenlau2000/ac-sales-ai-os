@@ -66,11 +66,13 @@
   }
 
   // ---- 话术意图分析：更新情绪 + 抽取信号/提示 ----
-  function analyze(text, customer, prevEmo) {
+  // difficulty 系数：难客户正面情绪获取被打折扣（魔鬼仅拿 60% 信任增益），更真实
+  function analyze(text, customer, prevEmo, difficulty) {
     const t = (text || "").toLowerCase();
     const has = (...kw) => kw.some(k => text.includes(k));
     const emo = Object.assign({}, prevEmo);
-    const bump = (k, d) => { emo[k] = Math.max(0, Math.min(100, (emo[k] || 0) + d)); };
+    const dMul = ({ "普通": 1, "困难": 0.9, "地狱": 0.75, "魔鬼": 0.6 }[difficulty] || 1);
+    const bump = (k, d) => { emo[k] = Math.max(0, Math.min(100, (emo[k] || 0) + Math.round(d * dMul))); };
 
     const signals = [], tips = [], refs = [];
     if (has("?", "吗", "么")) { bump("Interest", 6); }
@@ -86,27 +88,138 @@
     return { emotion: emo, signals, tips, refs: refs.slice(0, 3) };
   }
 
-  // ---- 客户回复生成（情境化 + 难度缩放） ----
-  const REPLIES = {
-    price: ["还是有点贵啊，隔壁牌子的差不多配置便宜好几千。", "总价超我预算了，你这价格水分大不大？", "能不能再优惠点？网上看着都便宜些。"],
-    energy: ["那电费确实得算算，五年能省出多少？", "省电我信，但你说的 APF 到底怎么看出来？", "静音和制冷快，这两点我最在意。"],
-    install: ["安装要多久？会不会把我家搞得乱七八糟？", "保修几年？万一漏氟找谁？", "我房子还在水电阶段，现在定来得及吗？"],
-    noise: ["我卧室怕吵，晚上睡眠浅。", "之前那台外机嗡嗡响，太折磨了。"],
-    question: ["你说得有点道理，那具体怎么选？", "那我家这情况你建议哪款？", "听起来不错，不过我得跟家里人商量下。"],
-    generic: ["嗯，我再想想。", "你继续说，我在听。", "这个我之前也了解过一些。", "行，那你给个方案我看看。"],
-  };
-  function genReply(text, session) {
+  // ============ 客户对话引擎（第 1 代：意图感知 + 应答） ============
+  // 诊断：旧版 genReply 仅按当前句关键词从固定 bank 随机抽句，完全不看销售在说什么，
+  //       导致"答非所问"。第 1 代改为：识别销售话术意图 → 客户就"所提话题"做应答。
+  function detectIntent(text) {
     const t = text || "";
-    let bank = "generic";
-    if (/价格|贵|便宜|多少钱|预算|划算|值/.test(t)) bank = "price";
-    else if (/省电|电费|apf|能效|节能/.test(t)) bank = "energy";
-    else if (/安装|售后|保修|服务|维修/.test(t)) bank = "install";
-    else if (/噪音|静音|声音/.test(t)) bank = "noise";
-    else if (/[?？]/.test(t) || /吗|么$/.test(t)) bank = "question";
-    let r = pick(REPLIES[bank]);
-    if (session.difficulty === "魔鬼" && bank !== "generic") r += "（客户明显不买账，一直在挑刺）";
-    else if (session.difficulty === "地狱" && Math.random() > 0.5) r += "（客户有点犹豫）";
-    return r;
+    const isQuestion = /[?？]/.test(t) ||
+      /(吗|么|呢|什么|啥|多少|几|怎么|如何|哪|哪里|谁|为什么|啥时候|多久|行不行|好不好|可以吗|对不对|是不是)/.test(t);
+    const intents = [];
+    const add = (n, s) => intents.push({ n, s });
+    if (/价格|贵|便宜|多少钱|预算|划算|值|报价|优惠|折扣|补贴|让一点/.test(t)) add("price", 3);
+    if (/省电|电费|apf|能效|节能|省/.test(t)) add("energy", 3);
+    if (/安装|售后|保修|服务|维修|包修|抽真空|检修/.test(t)) add("install", 3);
+    if (/噪音|静音|声音|吵|嗡/.test(t)) add("noise", 3);
+    if (/品牌|格力|美的|大金|海尔|日立|三菱|约克|对比|区别|竞品|哪家|牌子/.test(t)) add("brand", 3);
+    if (/面积|平米|㎡|户型|几室|房子|装修|新房|旧房|建面/.test(t)) add("house", 2);
+    if (/孩子|老人|家人|老婆|老公|父母|家庭|卧室|客厅|同住/.test(t)) add("family", 2);
+    if (/下单|交定金|先交定金|签(合同|单)|锁定权益|定下来|今天定|就定|现在定|成交/.test(t)) add("close", 4);
+    if (/理解|担心|您|咱们|考虑|放心|感同身受|怕/.test(t)) add("empathy", 2);
+    intents.sort((a, b) => b.s - a.s);
+    return { isQuestion, top: intents[0] ? intents[0].n : "generic", intents };
+  }
+
+  const INTENT_ACK = {
+    price: ["价格我确实上心，", "你说得对，得算总账，", "钱这块我得掰扯清楚，"],
+    energy: ["省电我认，", "电费我有点数，", "节能我肯定要，"],
+    install: ["安装我正担心，", "保修你得交个底，", "售后这块我最虚，"],
+    noise: ["静音太要命了，", "噪音我怕得很，", "安静我必须得要，"],
+    brand: ["品牌我也在挑，", "你说的牌子我比过，", "牌子我纠结，"],
+    house: ["我家就这情况，", "房子是这么个房子，", "户型你说的对，"],
+    family: ["家里人你得顾上，", "老人孩子我挂心，", "一家子意见你得听，"],
+    empathy: ["你这么讲我就舒坦了，", "你能体谅挺好，", "你懂我意思就好，"],
+    close: ["你这步我有点动心，", "行，你说到这儿了，", "定金这茬我听着，"],
+    generic: ["嗯，我听着呢，", "你接着说，", "这个我之前也想，"],
+  };
+  const INTENT_BODY = {
+    price: ["但隔壁同配便宜好几千，你这价水分多大？", "不过网上看着便宜一截，优惠能给到多少？", "算完还是超预算，能不能再让一点？"],
+    energy: ["那五年到底省多少电费？你帮我算笔账。", "APF 到底怎么个看法，别光说高。", "制冷快加静音我最在意，这两样能保吗？"],
+    install: ["安装折腾几天？我家刚水电阶段来得及不？", "万一漏氟找谁，保修几年说清楚。", "内机藏吊顶里，以后检修方便不？"],
+    noise: ["我睡眠浅，卧室那台千万别嗡嗡响。", "之前那台外机吵得睡不着，这回必须静。", "主机位离卧室近，共振咋处理？"],
+    brand: ["格力美的我也看了，凭啥你贵一截？", "大金日立都在比，你给个准信。", "牌子我不迷信，但得讲出道理。"],
+    house: ["面积大确实费劲，你建议中央还是风管？", "三室这户型，你给个方案？", "南北通透但层高一般，有影响吗？"],
+    family: ["老人怕直吹孩子房要新风，你咋排？", "老婆盯颜值我盯售后，你得都顾上。", "一家子意见杂，你帮我捋捋。"],
+    empathy: ["我最怕买贵了还糟心，你给我兜个底。", "我就怕后期没人管，你实话实说。", "你能负责到底我就放心了。"],
+    close: ["不过得跟家人通个气再定。", "你这名额今天真有效？别忽悠我。", "定金能先交，但权益得写清。"],
+    generic: ["你再给我展开讲讲？", "那具体怎么落地？", "听起来还行，我消化下。"],
+  };
+  // ---- 提问分流：销售在提问时，客户直接作答（而非抛异议） ----
+  const Q_ANSWER = {
+    house: ["我家建面一百三多点，三室两厅南北通透。", "套内大概一百一，四室，正在搞装修。", "房子一百六，大平层，层高还行。"],
+    family: ["有个上小学的娃，还有老人同住，都怕吵怕直吹。", "两口子加一小孩，老人偶尔来住。", "一家四口，孩子还小，老人也住一块。"],
+    budget: ["我心里大概两万出头，超太多真得再想想。", "预算三万封顶吧，再高得跟老婆商量。", "没个准数，你给方案我看着办。"],
+    reno: ["刚水电做完，准备上木工了，正卡安装节点。", "软装都差不多了，就差空调没定。", "还在水电阶段，早着呢。"],
+    brand: ["格力美的都逛过，大金也问了价，还在比。", "日立和三菱我都有看，你这牌子中不中？", "没特别中意，谁划算买谁。"],
+    concern: ["我最怕买了不好用、售后没人管，还有静音。", "我担心价格虚高，还有保修靠不靠谱。", "怕安装糙了漏氟，后期糟心。"],
+    generic: ["这个嘛…我得想想再说。", "你问到点子上了，我一时还真说不准。", "嗯，让我捋捋——你接着说。"],
+  };
+  function answerQuestion(text, s) {
+    const t = text || "";
+    let bank = null;
+    if (/面积|多大|户型|几室|房子|平米|㎡|建面|多大平/.test(t)) bank = "house";
+    else if (/孩子|老人|家人|家庭|老婆|老公|父母|同住|几口/.test(t)) bank = "family";
+    else if (/预算|多少钱准备|心里价|打算花|准备多少/.test(t)) bank = "budget";
+    else if (/装修|阶段|进度|水电|木工|啥时候装/.test(t)) bank = "reno";
+    else if (/看过|比较|中意|牌子|哪个品牌|选哪/.test(t)) bank = "brand";
+    else if (/担心|顾虑|怕|在意|最在乎/.test(t)) bank = "concern";
+    return bank ? pick(Q_ANSWER[bank]) : null; // 未命中具体话题 → 返回 null，交由意图分支处理
+  }
+
+  // 衔接语：多轮对话中偶发，制造"在听、在接话"的连续感
+  const BRIDGE = ["嗯，行，", "你看啊，", "我刚才想了下，", "话说回来，", "哦对，", "这样吧，", "不过说真的，", "我跟你说，"];
+
+  // DISC 人格声线：同一客户全程风格一致（干脆 / 感性 / 稳妥 / 理性）
+  const DISC_VOICE = {
+    D: { open: ["说重点，", "直说吧，", ""], fill: ["你得给个准话。", "别绕弯子，直接报数。", "我就看结果。"], style: "干脆" },
+    I: { open: ["哎我跟你说，", "诶，", ""], fill: ["我家那口子也老念叨这个。", "我邻居上次就踩过坑。", "我朋友圈一姐们刚装的。"], style: "感性" },
+    S: { open: ["这个嘛…", "嗯，", ""], fill: ["我得回去跟家里人商量下。", "不着急，我再想想。", "你别催，我慢慢比。"], style: "稳妥" },
+    C: { open: ["等一下，", "数据上我得确认下，", ""], fill: ["你说的有依据吗？", "有没有检测报告？", "你这数怎么来的？"], style: "理性" },
+  };
+
+  function discWrap(reply, s, isQ) {
+    const disc = (s.customer && s.customer.psychology.DISC) || "S";
+    const dv = DISC_VOICE[disc] || DISC_VOICE.S;
+    const turns = s.turns || 1;
+    let out = reply;
+    // 衔接/开场：多轮后给连续感（DISC 开场白 或 通用衔接语）
+    if (turns > 1 && Math.random() < 0.5) out = (Math.random() < 0.5 ? pick(dv.open) : pick(BRIDGE)) + out;
+    // 收尾口头禅（DISC 风格一致；提问作答时不强加，避免违和）
+    if (!isQ && Math.random() < (disc === "C" ? 0.4 : disc === "D" ? 0.22 : 0.3)) out = out + pick(dv.fill);
+    return out;
+  }
+
+  // 成交推进：高信任 + 多轮 + 销售逼单 → 客户真同意收口
+  const CLOSE_YES = ["行，那你把定金单给我，今天就定。", "成，权益写清楚我就交钱。", "看你这么实在，那我先交个定金锁权益。", "那行，就按你说的，今天定下来。"];
+  const WARM = ["你这话在理，", "嗯，你说的我信。", "你这么讲我心里踏实点。", ""];
+
+  function genReply(text, s) {
+    const ci = detectIntent(text);
+    let reply = null, isQ = false;
+    const emo = s.emotion || {};
+    // 难度真实化：魔鬼/地狱抬高客户基础抗拒（不再用括号注脚）
+    const resist = Math.min(100, (emo.Resistance || 40) + (s.difficulty === "魔鬼" ? 25 : s.difficulty === "地狱" ? 15 : 0));
+    const trust = emo.Trust || 40;
+    // 销售在提问且问的是具体信息 → 客户直接作答
+    if (ci.isQuestion) {
+      const a = answerQuestion(text, s);
+      if (a) { reply = a; isQ = true; }
+    }
+    if (!reply) {
+      // 成交意图 + 高信任 + 压住抗拒 + 多轮 → 客户同意收口
+      // 收口阈值随难度抬高：普通 Trust>60/Resist<70，地狱 Trust>64/Resist<62，魔鬼 Trust>70/Resist<55
+      // （难客户既要赢得信任、又得压住抗拒才收口，符合真实销售逻辑）
+      const closeNeed = s.difficulty === "魔鬼" ? 70 : s.difficulty === "地狱" ? 64 : 60;
+      const closeResistCap = s.difficulty === "魔鬼" ? 55 : s.difficulty === "地狱" ? 62 : 70;
+      if (ci.top === "close" && trust > closeNeed && resist < closeResistCap && (s.turns || 1) > 2) {
+        return pick(CLOSE_YES);
+      }
+      const bodyBank = INTENT_BODY[ci.top];
+      let bi;
+      if (resist > 60 && bodyBank.length > 1) bi = bodyBank.length - 1; // 高抗拒→偏尖锐
+      else {
+        bi = rnd(0, bodyBank.length - 1);
+        if (s._lastBody && s._lastBody.t === ci.top && bodyBank.length > 1) {
+          let guard = 0;
+          while (bi === s._lastBody.i && guard++ < 6) bi = rnd(0, bodyBank.length - 1);
+        }
+      }
+      s._lastBody = { t: ci.top, i: bi };
+      let ack = pick(INTENT_ACK[ci.top]);
+      if (trust > 65 && Math.random() < 0.4) ack = pick(WARM); // 高信任→偶尔柔和开场
+      reply = ack + bodyBank[bi];
+    }
+    return discWrap(reply, s, isQ);
   }
 
   // ---- 16 维评分（基于全量销售话术关键词启发式） ----
@@ -209,11 +322,17 @@
         const cust = genCustomer({});
         s = state.sessions[sid] = { customer: cust, messages: [], emotion: cust.emotion, training_goal: "需求洞察", difficulty: "普通", report: null };
       }
+      if (!s.transcript) s.transcript = [];
+      if (!s.turns) s.turns = 0;
       const text = (body && body.message) || "";
-      s.messages.push(text);
-      const a = analyze(text, s.customer, s.emotion);
+      s.turns++;
+      s.transcript.push({ role: "sales", text });
+      const a = analyze(text, s.customer, s.emotion, s.difficulty);
       s.emotion = a.emotion;
-      return ok({ customer_reply: genReply(text, s), emotion: a.emotion, signals: a.signals, ai_tips: a.tips, knowledge_refs: a.refs, reply_source: "mock_twin" });
+      const reply = genReply(text, s);
+      s.transcript.push({ role: "customer", text: reply });
+      s.messages.push(text);
+      return ok({ customer_reply: reply, emotion: a.emotion, signals: a.signals, ai_tips: a.tips, knowledge_refs: a.refs, reply_source: "mock_twin" });
     }
     if (m === "POST" && path === "/api/training/end") {
       const sid = body && body.session_id; const s = state.sessions[sid];
