@@ -94,7 +94,7 @@
   function detectIntent(text) {
     const t = text || "";
     const isQuestion = /[?？]/.test(t) ||
-      /(吗|么|呢|什么|啥|多少|几|怎么|如何|哪|哪里|谁|为什么|啥时候|多久|行不行|好不好|可以吗|对不对|是不是)/.test(t);
+      /(吗|呢|什么|啥|多少|几|怎么|如何|哪|哪里|谁|为什么|啥时候|多久|行不行|好不好|可以吗|对不对|是不是)/.test(t);
     const intents = [];
     const add = (n, s) => intents.push({ n, s });
     if (/价格|贵|便宜|多少钱|预算|划算|值|报价|优惠|折扣|补贴|让一点/.test(t)) add("price", 3);
@@ -105,9 +105,13 @@
     if (/面积|平米|㎡|户型|几室|房子|装修|新房|旧房|建面/.test(t)) add("house", 2);
     if (/孩子|老人|家人|老婆|老公|父母|家庭|卧室|客厅|同住/.test(t)) add("family", 2);
     if (/下单|交定金|先交定金|签(合同|单)|锁定权益|定下来|今天定|就定|现在定|成交/.test(t)) add("close", 4);
-    if (/理解|担心|您|咱们|考虑|放心|感同身受|怕/.test(t)) add("empathy", 2);
+    if (/理解|咱们|感同身受|您放心|您看|您觉得|您说|您这么|您真是|为您|替您/.test(t)) add("empathy", 2);
     intents.sort((a, b) => b.s - a.s);
-    return { isQuestion, top: intents[0] ? intents[0].n : "generic", intents };
+    let top = intents[0] ? intents[0].n : "generic";
+    // 共情优先修正：陈述中含共情/rapport 标记、且并非在问家庭结构时，归到 empathy
+    // （避免"家人"一词把共情陈述误判为 family 问答，导致重复报家庭结构；对齐后端 coach.py）
+    if (!isQuestion && /理解|咱们|感同身受|您放心|您这么|您真是/.test(t) && !/孩子|老人|老婆|老公|父母|同住|几口/.test(t)) top = "empathy";
+    return { isQuestion, top, intents };
   }
 
   const INTENT_ACK = {
@@ -144,16 +148,35 @@
     concern: ["我最怕买了不好用、售后没人管，还有静音。", "我担心价格虚高，还有保修靠不靠谱。", "怕安装糙了漏氟，后期糟心。"],
     generic: ["这个嘛…我得想想再说。", "你问到点子上了，我一时还真说不准。", "嗯，让我捋捋——你接着说。"],
   };
+  // 提问分流：销售在提问时，客户基于真实数字孪生档案直接作答（事实接地，对齐后端 coach.py）
   function answerQuestion(text, s) {
     const t = text || "";
-    let bank = null;
-    if (/面积|多大|户型|几室|房子|平米|㎡|建面|多大平/.test(t)) bank = "house";
-    else if (/孩子|老人|家人|家庭|老婆|老公|父母|同住|几口/.test(t)) bank = "family";
-    else if (/预算|多少钱准备|心里价|打算花|准备多少/.test(t)) bank = "budget";
-    else if (/装修|阶段|进度|水电|木工|啥时候装/.test(t)) bank = "reno";
-    else if (/看过|比较|中意|牌子|哪个品牌|选哪/.test(t)) bank = "brand";
-    else if (/担心|顾虑|怕|在意|最在乎/.test(t)) bank = "concern";
-    return bank ? pick(Q_ANSWER[bank]) : null; // 未命中具体话题 → 返回 null，交由意图分支处理
+    const c = (s && s.customer) || {};
+    const h = c.house || {}, f = c.family || {}, b = c.budget || {};
+    const comp = (c.competitor || {}).visited || [];
+    const compStr = comp.length ? comp.join("、") : "别家";
+    const emo = c.emotion || {};
+    let ans = null;
+    if (/面积|多大|户型|几室|房子|平米|㎡|建面|多大平/.test(t)) {
+      ans = `我家建面大概${h.area}平，${h.type}，${h.orientation}。`;
+    } else if (/孩子|老人|家人|家庭|老婆|老公|父母|同住|几口/.test(t)) {
+      const parts = [];
+      if (f.has_child) parts.push("有个上学的娃");
+      if (f.has_elder) parts.push("老人同住");
+      if (!parts.length) parts.push("就两口子");
+      ans = `${f.members}——` + parts.join("，") + "，都怕吵怕直吹。";
+    } else if (/预算|多少钱准备|心里价|打算花|准备多少/.test(t)) {
+      ans = `我心里大概${b.expected}块，超太多真得再想想。`;
+    } else if (/装修|阶段|进度|水电|木工|啥时候装/.test(t)) {
+      ans = `刚${h.decoration_stage}，正卡安装节点。`;
+    } else if (/看过|比较|中意|牌子|哪个品牌|选哪/.test(t)) {
+      ans = `${compStr}我都逛过，还在比。`;
+    } else if (/担心|顾虑|怕|在意|最在乎/.test(t)) {
+      ans = (emo.Anxiety > 55 || emo.Resistance > 55)
+        ? "我最怕买了不好用、售后没人管，还有静音。"
+        : "我主要担心价格虚高，还有保修靠不靠谱。";
+    }
+    return ans; // 未命中具体话题 → 返回 null，交由意图分支处理
   }
 
   // 衔接语：多轮对话中偶发，制造"在听、在接话"的连续感
