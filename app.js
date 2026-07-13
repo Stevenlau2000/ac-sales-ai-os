@@ -23,6 +23,40 @@ const EMO_CN = { Trust:"信任", Interest:"兴趣", Anxiety:"焦虑", Pressure:"
 
 const state = { session: null, role: "销售顾问" };
 
+/* ---------- 语音：识别(Web Speech) + 播报(TTS) ---------- */
+let ttsOn = true;
+function speak(text){
+  const synth = window.speechSynthesis; if(!synth || !ttsOn) return;
+  try{
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "zh-CN"; u.rate = 1.02; u.pitch = 1;
+    const v = (synth.getVoices()||[]).find(x=>/zh|cmn/i.test(x.lang)||/Chinese/i.test(x.name));
+    if(v) u.voice = v;
+    synth.cancel(); synth.speak(u);
+  }catch(e){}
+}
+function setupTrainVoice(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = $("#mic-btn");
+  if(!SR){ if(btn) btn.style.display="none"; return; }
+  const rec = new SR();
+  rec.lang = "zh-CN"; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+  let listening = false;
+  const setUI = (on)=>{ if(!btn) return; btn.classList.toggle("listening",on); btn.textContent = on?"🎙️":"🎤"; };
+  rec.onresult = (e)=>{
+    let interim="", final="";
+    for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal) final+=r[0].transcript; else interim+=r[0].transcript; }
+    $("#msg").value = final || interim;
+    if(final){ const v=final.trim(); if(v) setTimeout(()=>{ if($("#msg").value.trim()===v) sendTurn(); }, 520); }
+  };
+  rec.onend = ()=>{ listening=false; setUI(false); };
+  rec.onerror = (e)=>{ if(e.error==="not-allowed") toast("麦克风权限被拒绝"); };
+  if(btn) btn.onclick = ()=>{
+    if(!listening){ try{ rec.start(); listening=true; setUI(true); toast("聆听中…说完自动发送"); }catch(_){} }
+    else { listening=false; rec.stop(); setUI(false); const v=$("#msg").value.trim(); if(v) sendTurn(); }
+  };
+}
+
 /* ---------- API（后端不可达时自动降级 Mock，保证离线/ GH Pages 可演示） ---------- */
 const IS_GH = location.hostname.endsWith("github.io") || location.hostname.endsWith("githubusercontent.com");
 const FORCE_DEMO = new URLSearchParams(location.search).has("demo");
@@ -80,7 +114,7 @@ function route(){
   renderNav(page);
   const view = $("#view");
   const handlers = {
-    dashboard: pageDashboard, hall: pageHall, start: pageStart, report: pageReport,
+    dashboard: pageDashboard, hall: pageHall, start: pageStart, train: pageTrain, report: pageReport,
     growth: pageGrowth, knowledge: pageKnowledge, custsim: pageCustSim, coach: pageCoach,
     enterprise: pageEnterprise, system: pageSystem,
   };
@@ -282,23 +316,30 @@ async function pageTrain(view, params){
   const sid = params.get("sid");
   if(!sid){ toast("缺少会话 ID"); location.hash="#/hall"; return; }
   if(!state.session || state.session.sid!==sid){
-    try{ const rep = await get("/api/training/report/"+sid).catch(()=>null);
-      // 续训：拉取已有会话消息困难（history 不返 messages），此处仅新开提示
-      state.session = { sid, customer:null, world:null, messages:[] };
-    }catch(e){}
+    state.session = { sid, customer:null, world:null, messages:[] };
+    // 续训：尝试补全客户画像（mock 用预览生成；真实后端暂无该端点，保持占位）
+    if(USE_MOCK){ try{ const pv = await post("/api/customer/preview",{}); state.session.customer = pv.customer; }catch(e){} }
   }
   view.innerHTML = `<div class="section-title">💬 AI 陪练 · 三栏训练</div>
     <div class="train-wrap">
       <div class="train-col left"><h4>👤 客户面板</h4><div id="cust-panel"><div class="skeleton"></div></div></div>
-      <div class="train-col"><h4>💬 对话</h4><div class="chat" id="chat"></div>
-        <div class="chat-input"><input id="msg" placeholder="输入销售话术，回车发送…" /><button class="btn primary" id="send">发送</button></div></div>
+      <div class="train-col"><h4>💬 对话 <span class="pill ai" style="font-size:11px">🎤 语音 / 🔊 播报</span></h4><div class="chat" id="chat"></div>
+        <div class="chat-input">
+          <button class="btn icon" id="mic-btn" title="语音输入（说完自动发送）">🎤</button>
+          <input id="msg" placeholder="说或输入销售话术，回车/发送…" />
+          <button class="btn icon ai" id="tts-toggle" title="客户语音播报开关">🔊</button>
+          <button class="btn primary" id="send">发送</button>
+        </div></div>
       <div class="train-col right"><h4>🧠 AI 观察（常驻）</h4><div id="obs" style="overflow:auto;flex:1">${loadingHTML(3)}</div>
         <button class="btn ai" id="end-btn" style="margin-top:10px;width:100%">结束训练 · 生成报告</button></div>
     </div>`;
   if(state.session.customer){ renderCustPanel(state.session.customer); }
-  else { $("#cust-panel").innerHTML = `<div class="empty"><div class="big">👤</div>客户信息加载中…</div>`; }
+  else { $("#cust-panel").innerHTML = `<div class="empty"><div class="big">👤</div>客户画像（续训会话，演示用预览生成）</div>`; }
   $("#send").onclick = ()=>sendTurn();
   $("#msg").addEventListener("keydown", e=>{ if(e.key==="Enter") sendTurn(); });
+  $("#tts-toggle").classList.toggle("on", ttsOn);
+  $("#tts-toggle").onclick = ()=>{ ttsOn=!ttsOn; $("#tts-toggle").classList.toggle("on",ttsOn); if(!ttsOn && window.speechSynthesis) speechSynthesis.cancel(); toast(ttsOn?"客户语音播报：开":"客户语音播报：关"); };
+  setupTrainVoice();
   $("#end-btn").onclick = ()=>endTraining();
 }
 async function sendTurn(){
@@ -311,6 +352,7 @@ async function sendTurn(){
     const r = await post("/api/training/turn", { session_id:state.session.sid, message:text });
     typing.remove();
     appendMsg("customer", r.customer_reply);
+    if(ttsOn) speak(r.customer_reply);
     renderObs(r);
     if(state.session.customer) state.session.customer.emotion = r.emotion;
   }catch(e){ typing.remove(); toast("对话失败："+e.message); }
@@ -453,8 +495,14 @@ function pageKnowledge(view){
     </div>
     <div class="grid cols-2">
       <div class="card"><h3>📖 知识库</h3><div id="kb-list">${loadingHTML(3)}</div></div>
-      <div class="card"><h3>➕ 录入知识</h3>
-        <input id="kba-title" placeholder="标题" /><textarea id="kba-content" rows="4" placeholder="内容"></textarea>
+      <div class="card"><h3>➕ 录入知识 <span class="pill ai" style="font-size:11px">🎤 语音 · 📎 附件</span></h3>
+        <input id="kba-title" placeholder="标题" />
+        <textarea id="kba-content" rows="4" placeholder="内容（可点 🎤 语音录入，或粘贴/打字）"></textarea>
+        <div class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap">
+          <button class="btn icon" id="kba-mic" title="语音录入内容">🎤</button>
+          <label class="btn icon" id="kba-file-btn" title="添加附件">📎<input id="kba-file" type="file" multiple hidden /></label>
+          <span id="kba-attach" class="attach-list"></span>
+        </div>
         <div class="grid cols-2"><select id="kba-cat">${["product","faq","solution","installation","competitor","policy"].map(c=>`<option>${c}</option>`).join("")}</select>
         <input id="kba-tags" placeholder="标签,逗号分隔" /></div>
         <button class="btn primary sm" style="margin-top:10px" id="kba-add">保存</button>
@@ -476,13 +524,39 @@ function pageKnowledge(view){
     }catch(e){ toast("查询失败："+e.message); }
   };
   $("#kb-search").onclick=()=>run("search"); $("#kb-ask").onclick=()=>run("ask");
+  // ---- 附件 ----
+  let pendingAttach=[];
+  const renderAttach=()=>{ $("#kba-attach").innerHTML = pendingAttach.map((a,i)=>`<span class="attach-chip" data-i="${i}">${esc(a.name)} <b>×</b></span>`).join(""); };
+  $("#kba-attach").addEventListener("click", e=>{ const c=e.target.closest(".attach-chip"); if(c){ pendingAttach.splice(+c.dataset.i,1); renderAttach(); } });
+  $("#kba-file").onchange=(e)=>{
+    [...e.target.files].forEach(f=>{ const rd=new FileReader();
+      rd.onload=()=>{ pendingAttach.push({name:f.name,type:f.type,size:f.size,data:rd.result}); renderAttach(); };
+      rd.readAsDataURL(f); });
+    e.target.value="";
+  };
+  // ---- 语音录入（追加到内容） ----
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition; const micBtn=$("#kba-mic");
+  if(!SR){ micBtn.style.display="none"; }
+  else {
+    const rec=new SR(); rec.lang="zh-CN"; rec.interimResults=true; rec.continuous=false;
+    let listening=false, committed="";
+    rec.onresult=(e)=>{ let interim="",final=""; for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal) final+=r[0].transcript; else interim+=r[0].transcript; } if(final) committed=(committed+" "+final).trim(); $("#kba-content").value=(committed+" "+(interim||final)).trim(); };
+    rec.onend=()=>{ listening=false; micBtn.classList.remove("listening"); };
+    rec.onerror=(e)=>{ if(e.error==="not-allowed") toast("麦克风权限被拒绝"); };
+    micBtn.onclick=()=>{ if(!listening){ committed=$("#kba-content").value; try{ rec.start(); listening=true; micBtn.classList.add("listening"); toast("聆听中…"); }catch(_){} } else { rec.stop(); } };
+  }
+  // ---- 保存（含附件） ----
   $("#kba-add").onclick=async()=>{ try{ await post("/api/knowledge/add",{title:$("#kba-title").value,content:$("#kba-content").value,
-    category:$("#kba-cat").value,tags:$("#kba-tags").value}); toast("知识已保存","good"); $("#kba-title").value="";$("#kba-content").value=""; loadKbList(); }catch(e){ toast("保存失败："+e.message);} };
+    category:$("#kba-cat").value,tags:$("#kba-tags").value,attachments:pendingAttach});
+    toast("知识已保存","good"); $("#kba-title").value="";$("#kba-content").value="";$("#kba-tags").value=""; pendingAttach=[]; renderAttach(); loadKbList(); }catch(e){ toast("保存失败："+e.message);} };
   loadKbList();
   async function loadKbList(){
     try{ const list=await get("/api/knowledge/list");
-      $("#kb-list").innerHTML=list.map(k=>`<div class="kb-card"><span class="pill">${esc(k.category)}</span> <b>${esc(k.title)}</b>
-        <span class="muted">· ${esc(k.brand||"通用")}</span><div class="content">${esc((k.content||"").slice(0,70))}…</div></div>`).join("");
+      $("#kb-list").innerHTML=list.map(k=>{
+        const att=(k.attachments||[]); const chips=att.length?`<div class="attach-list" style="margin-top:5px">${att.map(a=>`<span class="attach-chip static">📎 ${esc(a.name||a)}</span>`).join("")}</div>`:"";
+        return `<div class="kb-card"><span class="pill">${esc(k.category)}</span> <b>${esc(k.title)}</b>
+          <span class="muted">· ${esc(k.brand||"通用")}</span><div class="content">${esc((k.content||"").slice(0,70))}…</div>${chips}</div>`;
+      }).join("");
     }catch(e){ $("#kb-list").innerHTML="加载失败"; }
   }
 }
