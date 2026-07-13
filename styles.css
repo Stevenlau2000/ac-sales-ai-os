@@ -154,6 +154,18 @@ body{
 .btn.ghost:hover{color:var(--ink);background:var(--panel-2)}
 .btn.sm{padding:6px 13px;font-size:12px}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn.icon{padding:0;width:40px;height:40px;font-size:17px;border-radius:var(--radius-xs);flex:0 0 auto}
+.btn.icon.ai.on{background:linear-gradient(120deg,var(--warm),var(--warm-2));color:#1a0d04;border:none;box-shadow:0 0 0 3px var(--ai-soft)}
+#mic-btn,#kba-mic{transition:.18s}
+#mic-btn.listening,#kba-mic.listening{animation:micPulse 1.1s ease-in-out infinite;border-color:var(--cool);color:var(--cool);box-shadow:0 0 0 3px var(--primary-soft)}
+@keyframes micPulse{0%,100%{transform:scale(1);box-shadow:0 0 0 3px var(--primary-soft)}50%{transform:scale(1.08);box-shadow:0 0 0 8px transparent,0 0 14px rgba(42,216,201,.5)}}
+
+/* 附件芯片 */
+.attach-list{display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center}
+.attach-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-2);font-size:11.5px;color:var(--sub);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attach-chip b{cursor:pointer;color:var(--bad);font-weight:800;padding:0 2px}
+.attach-chip.static{cursor:default;color:var(--cool);border-color:rgba(42,216,201,.3)}
+#kba-file-btn{cursor:pointer}
 
 input,select,textarea{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);
   background:var(--panel-solid);color:var(--ink);font-size:13px;font-family:inherit;transition:.15s}
