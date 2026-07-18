@@ -7,9 +7,9 @@
   "use strict";
 
   const DIMS = [
-    ["破冰能力", 6], ["需求洞察", 8], ["情绪价值", 6], ["产品讲解", 7], ["价值塑造", 7],
-    ["FABE", 6], ["SPIN", 6], ["异议处理", 7], ["竞品应对", 6], ["成交推进", 7],
-    ["客户信任", 7], ["Closing", 6], ["逻辑表达", 6], ["专业程度", 7], ["共情能力", 6], ["语言感染力", 6],
+    ["破冰能力", 5], ["需求洞察", 10], ["情绪价值", 7], ["产品讲解", 7], ["价值塑造", 9],
+    ["FABE", 6], ["SPIN", 7], ["异议处理", 9], ["竞品应对", 6], ["成交推进", 9],
+    ["客户信任", 7], ["Closing", 6], ["逻辑表达", 3], ["专业程度", 3], ["共情能力", 3], ["语言感染力", 3],
   ];
   const EMO = ["Trust", "Interest", "Anxiety", "Pressure", "Excitement", "Satisfaction", "Confusion", "Resistance"];
   const PRODUCTS = ["挂机", "柜机", "中央空调", "新风", "热泵两联供"];
@@ -344,7 +344,7 @@
     });
   }
 
-  function levelOf(s) { return s >= 88 ? "销冠" : s >= 75 ? "优秀" : s >= 60 ? "熟练" : "进阶"; }
+  function levelOf(s) { return s >= 90 ? "销冠" : s >= 80 ? "高级" : s >= 70 ? "中级" : s >= 60 ? "初级" : "新手"; }
 
   function buildReport(session) {
     const dims = scoreDims(session.messages, session.training_goal);
@@ -420,7 +420,7 @@
       const reply = genReply(text, s);
       s.transcript.push({ role: "customer", text: reply });
       s.messages.push(text);
-      return ok({ customer_reply: reply, emotion: a.emotion, signals: a.signals, ai_tips: a.tips, knowledge_refs: a.refs, reply_source: "mock_twin" });
+      return ok({ customer_reply: reply, emotion: a.emotion, signals: a.signals, ai_tips: a.tips, knowledge_refs: a.refs, reply_source: "mock_twin", trace_id: "mock-" + Date.now(), confidence: "Medium", evidence: a.refs.length ? ["知识引用匹配"] : ["启发式规则匹配"], dispatch_log: { selected_agents: [], quality_check: "passed" }, next_action: "继续推进，保持信任节奏。" });
     }
     if (m === "POST" && path === "/api/training/end") {
       const sid = body && body.session_id; const s = state.sessions[sid];
